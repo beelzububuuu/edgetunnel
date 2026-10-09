@@ -1,0 +1,51 @@
+name: Auto Update & Deploy
+
+# 每天 UTC 00:30（北京时间 08:30）自动从官方 cmliu/edgetunnel 同步最新版，
+# 并通过 wrangler 直接部署到现有的 Cloudflare Pages 项目 mts。
+# 注意：同步用 merge 方式，保留本仓库自己的文件（包括本工作流），不会自删。
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "30 0 * * *"
+  workflow_dispatch: # 允许在 Actions 页面手动触发（首次设置和排障用）
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Sync from upstream (cmliu/edgetunnel)
+        run: |
+          git config user.name "GH Action - Auto Update"
+          git config user.email "action@github.com"
+          git remote add upstream https://github.com/cmliu/edgetunnel.git
+          git fetch upstream main
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          if [ "$BEHIND" = "0" ]; then
+            echo "fork 已是最新，无需部署"
+          else
+            echo "落后上游 $BEHIND 个提交，开始合并"
+            git merge upstream/main --no-edit
+            git push origin main
+            echo "UPDATED=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Prepare deploy bundle (_worker.js at root)
+        run: |
+          mkdir -p bundle
+          cp _worker.js bundle/_worker.js
+
+      - name: Deploy to Cloudflare Pages
+        if: env.UPDATED == 'true' || github.event_name == 'workflow_dispatch'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy bundle --project-name=mts --branch=main --commit-dirty=true
